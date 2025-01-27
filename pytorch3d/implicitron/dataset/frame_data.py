@@ -48,6 +48,7 @@ from pytorch3d.implicitron.dataset.utils import (
 from pytorch3d.implicitron.tools.config import registry, ReplaceableBase
 from pytorch3d.renderer.camera_utils import join_cameras_as_batch
 from pytorch3d.renderer.cameras import CamerasBase, PerspectiveCameras
+from pytorch3d.structures.meshes import join_meshes_as_batch, Meshes
 from pytorch3d.structures.pointclouds import join_pointclouds_as_batch, Pointclouds
 
 FrameAnnotationT = types.FrameAnnotation | orm_types.SqlFrameAnnotation
@@ -158,7 +159,7 @@ class FrameData(Mapping[str, Any]):
         new_params = {}
         for field_name in iter(self):
             value = getattr(self, field_name)
-            if isinstance(value, (torch.Tensor, Pointclouds, CamerasBase)):
+            if isinstance(value, (torch.Tensor, Pointclouds, CamerasBase, Meshes)):
                 new_params[field_name] = value.to(*args, **kwargs)
             else:
                 new_params[field_name] = value
@@ -420,7 +421,6 @@ class FrameData(Mapping[str, Any]):
             for f in fields(elem):
                 if not f.init:
                     continue
-
                 list_values = override_fields.get(
                     f.name, [getattr(d, f.name) for d in batch]
                 )
@@ -429,7 +429,7 @@ class FrameData(Mapping[str, Any]):
                     if all(list_value is not None for list_value in list_values)
                     else None
                 )
-            return cls(**collated)
+            return type(elem)(**collated)
 
         elif isinstance(elem, Pointclouds):
             return join_pointclouds_as_batch(batch)
@@ -437,6 +437,8 @@ class FrameData(Mapping[str, Any]):
         elif isinstance(elem, CamerasBase):
             # TODO: don't store K; enforce working in NDC space
             return join_cameras_as_batch(batch)
+        elif isinstance(elem, Meshes):
+            return join_meshes_as_batch(batch)
         else:
             return torch.utils.data.dataloader.default_collate(batch)
 
@@ -589,8 +591,10 @@ class GenericFrameDataBuilder(FrameDataBuilderBase[FrameDataSubtype], ABC):
             ),
         )
 
-        fg_mask_np: Optional[np.ndarray] = None
+        fg_mask_np: np.ndarray | None = None
+        bbox_xywh: tuple[float, float, float, float] | None = None
         mask_annotation = frame_annotation.mask
+
         if mask_annotation is not None:
             if load_blobs and self.load_masks:
                 fg_mask_np, mask_path = self._load_fg_probability(frame_annotation)
@@ -598,10 +602,6 @@ class GenericFrameDataBuilder(FrameDataBuilderBase[FrameDataSubtype], ABC):
                 frame_data.fg_probability = safe_as_tensor(fg_mask_np, torch.float)
 
             bbox_xywh = mask_annotation.bounding_box_xywh
-            if bbox_xywh is None and fg_mask_np is not None:
-                bbox_xywh = get_bbox_from_mask(fg_mask_np, self.box_crop_mask_thr)
-
-            frame_data.bbox_xywh = safe_as_tensor(bbox_xywh, torch.float)
 
         if frame_annotation.image is not None:
             image_size_hw = safe_as_tensor(frame_annotation.image.size, torch.long)
@@ -618,10 +618,26 @@ class GenericFrameDataBuilder(FrameDataBuilderBase[FrameDataSubtype], ABC):
                 if image_path is None:
                     raise ValueError("Image path is required to load images.")
 
-                image_np = load_image(self._local_path(image_path))
+                no_mask = fg_mask_np is None  # didn’t read the mask file
+                image_np = load_image(
+                    self._local_path(image_path), try_read_alpha=no_mask
+                )
+                if image_np.shape[0] == 4:  # RGBA image
+                    if no_mask:
+                        fg_mask_np = image_np[3:]
+                        frame_data.fg_probability = safe_as_tensor(
+                            fg_mask_np, torch.float
+                        )
+
+                    image_np = image_np[:3]
+
                 frame_data.image_rgb = self._postprocess_image(
                     image_np, frame_annotation.image.size, frame_data.fg_probability
                 )
+
+        if bbox_xywh is None and fg_mask_np is not None:
+            bbox_xywh = get_bbox_from_mask(fg_mask_np, self.box_crop_mask_thr)
+        frame_data.bbox_xywh = safe_as_tensor(bbox_xywh, torch.float)
 
         depth_annotation = frame_annotation.depth
         if (
