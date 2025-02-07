@@ -87,6 +87,15 @@ def is_train_frame(
 def get_bbox_from_mask(
     mask: np.ndarray, thr: float, decrease_quant: float = 0.05
 ) -> Tuple[int, int, int, int]:
+    # these corner cases need to be handled in order to avoid an infinite loop
+    if mask.size == 0:
+        warnings.warn("Empty mask is provided for bbox extraction.", stacklevel=1)
+        return 0, 0, 1, 1
+
+    if not mask.min() >= 0.0:
+        warnings.warn("Negative values in the mask for bbox extraction.", stacklevel=1)
+        mask = mask.clip(min=0.0)
+
     # bbox in xywh
     masks_for_box = np.zeros_like(mask)
     while masks_for_box.sum() <= 1.0:
@@ -202,14 +211,21 @@ def resize_image(
     if isinstance(image, np.ndarray):
         image = torch.from_numpy(image)
 
-    if image_height is None or image_width is None:
+    if (
+        image_height is None
+        or image_width is None
+        or image.shape[-2] == 0
+        or image.shape[-1] == 0
+    ):
         # skip the resizing
         return image, 1.0, torch.ones_like(image[:1])
+
     # takes numpy array or tensor, returns pytorch tensor
     minscale = min(
         image_height / image.shape[-2],
         image_width / image.shape[-1],
     )
+
     imre = torch.nn.functional.interpolate(
         image[None],
         scale_factor=minscale,
@@ -217,6 +233,7 @@ def resize_image(
         align_corners=False if mode == "bilinear" else None,
         recompute_scale_factor=True,
     )[0]
+
     imre_ = torch.zeros(image.shape[0], image_height, image_width)
     imre_[:, 0 : imre.shape[1], 0 : imre.shape[2]] = imre
     mask = torch.zeros(1, image_height, image_width)
@@ -229,9 +246,21 @@ def transpose_normalize_image(image: np.ndarray) -> np.ndarray:
     return im.astype(np.float32) / 255.0
 
 
-def load_image(path: str) -> np.ndarray:
+def load_image(
+    path: str, try_read_alpha: bool = False, pil_format: str = "RGB"
+) -> np.ndarray:
+    """
+    Load an image from a path and return it as a numpy array.
+    If try_read_alpha is True, the image is read as RGBA and the alpha channel is
+    returned as the fourth channel.
+    Otherwise, the image is read as RGB and a three-channel image is returned.
+    """
     with Image.open(path) as pil_im:
-        im = np.array(pil_im.convert("RGB"))
+        # Check if the image has an alpha channel
+        if try_read_alpha and pil_im.mode == "RGBA":
+            im = np.array(pil_im)
+        else:
+            im = np.array(pil_im.convert(pil_format))
 
     return transpose_normalize_image(im)
 
@@ -369,7 +398,7 @@ def adjust_camera_to_image_scale_(
     )
     camera.focal_length = focal_length_scaled[None]
     # pyre-fixme[16]: `PerspectiveCameras` has no attribute `principal_point`.
-    camera.principal_point = principal_point_scaled[None]
+    camera.principal_point = principal_point_scaled[None]  # pyre-ignore[16]
 
 
 # NOTE this cache is per-worker; they are implemented as processes.
