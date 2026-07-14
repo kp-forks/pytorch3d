@@ -103,8 +103,8 @@ def cot_laplacian(
     s = 0.5 * (A + B + C)
     # note that the area can be negative (close to 0) causing nans after sqrt()
     # we clip it to a small positive value
-    # pyre-fixme[16]: `float` has no attribute `clamp_`.
-    area = (s * (s - A) * (s - B) * (s - C)).clamp_(min=eps).sqrt()
+    # pyre-fixme[16]: `float` has no attribute `clamp`.
+    area = (s * (s - A) * (s - B) * (s - C)).clamp(min=eps).sqrt()
 
     # Compute cotangents of angles, of shape (sum(F_n), 3)
     A2, B2, C2 = A * A, B * B, C * C
@@ -112,7 +112,7 @@ def cot_laplacian(
     cotb = (A2 + C2 - B2) / area
     cotc = (A2 + B2 - C2) / area
     cot = torch.stack([cota, cotb, cotc], dim=1)
-    cot /= 4.0
+    cot = cot / 4.0
 
     # Construct a sparse matrix by basically doing:
     # L[v1, v2] = cota
@@ -127,7 +127,7 @@ def cot_laplacian(
     # L[v2, v1] = cota
     # L[v0, v2] = cotb
     # L[v1, v0] = cotc
-    L += L.t()
+    L = L + L.t()
 
     # For each vertex, compute the sum of areas for triangles containing it.
     idx = faces.view(-1)

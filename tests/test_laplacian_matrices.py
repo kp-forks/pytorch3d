@@ -118,3 +118,14 @@ class TestLaplacianMatrices(TestCaseMixin, unittest.TestCase):
             Lnaive[e1, e0] += w01
 
         self.assertClose(L.to_dense(), Lnaive)
+
+    def test_cot_laplacian_backward(self):
+        """Regression: in-place ops in _cot_laplacian_python break autograd."""
+        verts = torch.tensor(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+            requires_grad=True,
+        )
+        faces = torch.tensor([[0, 1, 2], [1, 3, 2]])
+        L, inv_areas = cot_laplacian(verts, faces)
+        (L.to_dense().sum() + inv_areas.sum()).backward()
+        assert verts.grad is not None
