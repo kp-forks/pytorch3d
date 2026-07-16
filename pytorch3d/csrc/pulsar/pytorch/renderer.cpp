@@ -7,13 +7,10 @@
  */
 
 #include "./renderer.h"
-#include "../include/commands.h"
 #include "./camera.h"
 #include "./util.h"
 
-#include <ATen/ATen.h>
 #ifdef WITH_CUDA
-#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #endif
 
